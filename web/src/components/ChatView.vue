@@ -92,6 +92,9 @@ let highlightTimer: number | null = null;
 
 const visibleKeys = ref<Set<string>>(new Set());
 const FADE_IN_DELAY_MS = 30;
+const CHAT_SWITCH_DELAY_MS = 50;
+const switchingChat = ref(false);
+let switchingTimeout: ReturnType<typeof setTimeout> | null = null;
 
 function label(conversation: Conversation | null) {
   if (!conversation) return 'Выберите чат';
@@ -365,10 +368,34 @@ const timeline = computed<TimelineItem[]>(() => {
 watch(
   () => props.activeConversation?.id,
   async () => {
+    // Suppress fade-in watcher during transition to prevent old messages flashing
+    switchingChat.value = true;
+
+    // Cancel any pending fade-in timeout from the previous switch
+    if (switchingTimeout) {
+      clearTimeout(switchingTimeout);
+      switchingTimeout = null;
+    }
+
     visibleKeys.value = new Set();
     hideContextMenu();
     await nextTick();
     scrollToBottom();
+
+    // Wait for the parent to load new messages and re-render, then make them all
+    // visible immediately (no fade-in on initial chat open — only new/loaded messages fade)
+    switchingTimeout = window.setTimeout(async () => {
+      switchingChat.value = false;
+
+      await nextTick();
+      const currentKeys = timeline.value.map((i) => i.key);
+      if (currentKeys.length > 0) {
+        const updated = new Set(visibleKeys.value);
+        currentKeys.forEach((k) => updated.add(k));
+        visibleKeys.value = updated;
+      }
+      switchingTimeout = null;
+    }, CHAT_SWITCH_DELAY_MS);
   }
 );
 
@@ -399,11 +426,17 @@ watch(
 watch(
   () => timeline.value,
   async (items) => {
+    // Don't process during chat switch — the switch watcher handles initial visibility
+    if (switchingChat.value) return;
+
     const newKeys = items.map((i) => i.key).filter((k) => !visibleKeys.value.has(k));
     if (newKeys.length === 0) return;
 
     await nextTick();
     setTimeout(() => {
+      // Double-check we're not switching chats
+      if (switchingChat.value) return;
+
       const updated = new Set(visibleKeys.value);
       newKeys.forEach((k) => updated.add(k));
       visibleKeys.value = updated;
@@ -430,6 +463,10 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', handleKeydown);
   document.removeEventListener('contextmenu', handleGlobalContextMenu);
   if (highlightTimer) window.clearTimeout(highlightTimer);
+  if (switchingTimeout) {
+    clearTimeout(switchingTimeout);
+    switchingTimeout = null;
+  }
 });
 </script>
 
