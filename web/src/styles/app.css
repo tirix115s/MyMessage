@@ -324,7 +324,7 @@ button {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  padding: 0 14px 0;
+  padding: 0 6px 0 14px;
 }
 
 .tm-messages {
@@ -333,7 +333,7 @@ button {
   height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 16px 18px 18px;
+  padding: 16px 12px 18px 18px;
   scroll-behavior: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(120,145,170,.55) transparent;
@@ -810,12 +810,13 @@ button {
 .tm-context-menu {
   position: fixed;
   z-index: 9999;
-  min-width: 210px;
-  padding: 8px;
-  border-radius: 14px;
+  min-width: 160px;
+  max-width: 200px;
+  padding: 4px;
+  border-radius: 10px;
   background: linear-gradient(180deg, rgba(23, 37, 52, .995) 0%, rgba(16, 28, 41, .995) 100%);
   border: 1px solid rgba(70, 97, 124, .48);
-  box-shadow: 0 18px 50px rgba(0,0,0,.35);
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
   backdrop-filter: blur(16px);
 }
 
@@ -825,10 +826,13 @@ button {
   background: transparent;
   color: #eaf4ff;
   text-align: left;
-  padding: 11px 12px;
-  border-radius: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .tm-context-menu__item:hover {
