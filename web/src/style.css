@@ -294,3 +294,33 @@ code {
     border-right-color: var(--border);
   }
 }
+
+/* ===== Context Menu ===== */
+.tm-context-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 200px;
+  background: #1e2a38;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 10px;
+  padding: 6px 0;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  overflow: hidden;
+}
+
+.tm-context-menu__item {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  color: #e8f0fe;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.tm-context-menu__item:hover {
+  background: rgba(255,255,255,0.08);
+}
