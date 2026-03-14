@@ -420,6 +420,7 @@ async function openConversation(conversationId: string) {
   const previousConversationId = activeConversationId.value;
 
   activeConversationId.value = conversationId;
+  messages.value = [];
   loadingOlder.value = false;
   hasMoreOlder.value = true;
   hasMoreNewer.value = false;

@@ -92,10 +92,7 @@ let highlightTimer: number | null = null;
 
 const visibleKeys = ref<Set<string>>(new Set());
 const FADE_IN_DELAY_MS = 30;
-// Delay to allow parent to load new messages before making them visible
-const CHAT_SWITCH_DELAY_MS = 50;
-const switchingChat = ref(false);
-let switchingTimeout: number | null = null;
+let isInitialLoad = true;
 
 function label(conversation: Conversation | null) {
   if (!conversation) return 'Выберите чат';
@@ -369,33 +366,11 @@ const timeline = computed<TimelineItem[]>(() => {
 watch(
   () => props.activeConversation?.id,
   async () => {
-    // Suppress fade-in watcher during transition
-    switchingChat.value = true;
-
-    // Cancel any pending fade-in timeouts
-    if (switchingTimeout) {
-      clearTimeout(switchingTimeout);
-      switchingTimeout = null;
-    }
-
-    // Clear all visible keys immediately
     visibleKeys.value = new Set();
+    isInitialLoad = true;
     hideContextMenu();
-
     await nextTick();
     scrollToBottom();
-
-    switchingTimeout = window.setTimeout(async () => {
-      switchingChat.value = false;
-
-      await nextTick();
-      const currentKeys = timeline.value.map((i) => i.key);
-      if (currentKeys.length > 0) {
-        const updated = new Set(visibleKeys.value);
-        currentKeys.forEach((k) => updated.add(k));
-        visibleKeys.value = updated;
-      }
-    }, CHAT_SWITCH_DELAY_MS);
   }
 );
 
@@ -426,21 +401,24 @@ watch(
 watch(
   () => timeline.value,
   async (items) => {
-    // Don't process during chat switch — the switch watcher handles it
-    if (switchingChat.value) return;
-
     const newKeys = items.map((i) => i.key).filter((k) => !visibleKeys.value.has(k));
     if (newKeys.length === 0) return;
 
-    await nextTick();
-    setTimeout(() => {
-      // Double-check we're not switching chats
-      if (switchingChat.value) return;
-
+    if (isInitialLoad) {
+      // Initial chat load: add all keys immediately with no animation
+      isInitialLoad = false;
       const updated = new Set(visibleKeys.value);
       newKeys.forEach((k) => updated.add(k));
       visibleKeys.value = updated;
-    }, FADE_IN_DELAY_MS);
+    } else {
+      // New socket messages: use fade-in animation
+      await nextTick();
+      setTimeout(() => {
+        const updated = new Set(visibleKeys.value);
+        newKeys.forEach((k) => updated.add(k));
+        visibleKeys.value = updated;
+      }, FADE_IN_DELAY_MS);
+    }
   },
   { immediate: true }
 );
@@ -463,10 +441,6 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', handleKeydown);
   document.removeEventListener('contextmenu', handleGlobalContextMenu);
   if (highlightTimer) window.clearTimeout(highlightTimer);
-  if (switchingTimeout) {
-    clearTimeout(switchingTimeout);
-    switchingTimeout = null;
-  }
 });
 </script>
 
