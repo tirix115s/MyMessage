@@ -90,6 +90,9 @@ const contextMenu = ref<{
 const highlightedMessageId = ref<string | null>(null);
 let highlightTimer: number | null = null;
 
+const visibleKeys = ref<Set<string>>(new Set());
+const FADE_IN_DELAY_MS = 30;
+
 function label(conversation: Conversation | null) {
   if (!conversation) return 'Выберите чат';
   return conversation.title || conversation.type;
@@ -362,6 +365,7 @@ const timeline = computed<TimelineItem[]>(() => {
 watch(
   () => props.activeConversation?.id,
   async () => {
+    visibleKeys.value = new Set();
     hideContextMenu();
     await nextTick();
     scrollToBottom();
@@ -390,6 +394,22 @@ watch(
       scrollToBottom();
     }
   }
+);
+
+watch(
+  () => timeline.value,
+  async (items) => {
+    const newKeys = items.map((i) => i.key).filter((k) => !visibleKeys.value.has(k));
+    if (newKeys.length === 0) return;
+
+    await nextTick();
+    setTimeout(() => {
+      const updated = new Set(visibleKeys.value);
+      newKeys.forEach((k) => updated.add(k));
+      visibleKeys.value = updated;
+    }, FADE_IN_DELAY_MS);
+  },
+  { immediate: true }
 );
 
 function handleGlobalContextMenu(event: MouseEvent) {
@@ -469,6 +489,14 @@ onBeforeUnmount(() => {
           Прокрути вверх для загрузки старых сообщений
         </div>
 
+        <div
+          v-else-if="messages.length > 0"
+          class="tm-muted"
+          style="text-align: center; margin-bottom: 12px; font-size: 12px; color: #6a8399;"
+        >
+          Начало переписки
+        </div>
+
         <div v-if="!activeConversation" class="tm-empty-chat-state">
           <div class="tm-empty-chat-card">
             <div class="tm-avatar large">M</div>
@@ -480,11 +508,11 @@ onBeforeUnmount(() => {
         </div>
 
         <template v-for="item in timeline" :key="item.key">
-          <div v-if="item.type === 'day'" class="tm-day-separator">
+          <div v-if="item.type === 'day'" :class="['tm-day-separator', visibleKeys.has(item.key) ? 'is-visible' : '']">
             <span>{{ item.label }}</span>
           </div>
 
-          <div v-else-if="item.type === 'unread'" class="tm-unread-separator">
+          <div v-else-if="item.type === 'unread'" :class="['tm-unread-separator', visibleKeys.has(item.key) ? 'is-visible' : '']">
             <div class="tm-unread-separator__line"></div>
             <div class="tm-unread-separator__badge">
               {{ item.count }} новых {{ item.count === 1 ? 'сообщение' : item.count < 5 ? 'сообщения' : 'сообщений' }}
@@ -501,6 +529,7 @@ onBeforeUnmount(() => {
               item.groupedTop ? 'grouped-top' : '',
               item.groupedBottom ? 'grouped-bottom' : '',
               highlightedMessageId === item.message.id ? 'is-highlighted' : '',
+              visibleKeys.has(item.key) ? 'is-visible' : '',
             ]"
             @contextmenu.prevent.stop="openContextMenu($event, item.message)"
           >

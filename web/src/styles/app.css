@@ -361,6 +361,12 @@ button {
   display: flex;
   justify-content: center;
   margin: 14px 0 12px;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.tm-day-separator.is-visible {
+  opacity: 1;
 }
 
 .tm-day-separator span {
@@ -390,6 +396,12 @@ button {
   gap: 10px;
   margin: 14px 0 16px;
   padding: 0 8px;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.tm-unread-separator.is-visible {
+  opacity: 1;
 }
 
 .tm-unread-separator__line {
@@ -421,6 +433,12 @@ button {
   margin-bottom: 3px;
   max-width: 560px;
   position: relative;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.tm-message-shell.is-visible {
+  opacity: 1;
 }
 
 .tm-message-shell.mine {
