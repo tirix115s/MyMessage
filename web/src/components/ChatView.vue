@@ -176,8 +176,6 @@ function scrollToBottom() {
 }
 
 async function onScroll() {
-  hideContextMenu();
-
   const el = messagesEl.value;
   if (!el) return;
 
@@ -267,8 +265,11 @@ function handleJumpToMessage(messageId: string) {
   hideContextMenu();
 }
 
-function handleGlobalClick() {
-  hideContextMenu();
+function handleGlobalClick(event: MouseEvent) {
+  const target = event.target as HTMLElement | null;
+  if (!target?.closest('.tm-context-menu')) {
+    hideContextMenu();
+  }
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -585,20 +586,20 @@ onBeforeUnmount(() => {
           ➤
         </button>
       </div>
+    </div>
 
-      <div
-        v-if="contextMenu.visible && contextMenu.message"
-        class="tm-context-menu"
-        :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
-        @click.stop
-        @contextmenu.stop
-      >
-        <button class="tm-context-menu__item" @click="handleReply(contextMenu.message)">↩ Ответить</button>
-        <button class="tm-context-menu__item" @click="handlePin(contextMenu.message)">📌 Закрепить</button>
-        <button class="tm-context-menu__item" @click="handleJumpToMessage(contextMenu.message.id)">
-          🎯 Перейти к сообщению
-        </button>
-      </div>
+    <div
+      v-if="contextMenu.visible && contextMenu.message"
+      class="tm-context-menu"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      @click.stop
+      @contextmenu.stop
+    >
+      <button class="tm-context-menu__item" @click="handleReply(contextMenu.message)">↩ Ответить</button>
+      <button class="tm-context-menu__item" @click="handlePin(contextMenu.message)">📌 Закрепить</button>
+      <button class="tm-context-menu__item" @click="handleJumpToMessage(contextMenu.message.id)">
+        🎯 Перейти к сообщению
+      </button>
     </div>
   </main>
 </template>
