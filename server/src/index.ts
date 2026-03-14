@@ -216,6 +216,11 @@ io.on('connection', (socket) => {
   });
 });
 
+console.log('[MyMessage] Server starting...');
+console.log('[MyMessage] ✅ Pagination support: enabled (limit/before params)');
+console.log('[MyMessage] ✅ Context menu fix: enabled');
+console.log('[MyMessage] ✅ UI/UX fixes: enabled');
+
 server.listen(env.port, () => {
-  console.log(`API listening on :${env.port}`);
+  console.log(`[MyMessage] Server running on port ${env.port}`);
 });

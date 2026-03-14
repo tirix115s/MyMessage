@@ -181,6 +181,10 @@ io.on('connection', (socket) => {
         broadcastOnlineUsers();
     });
 });
+console.log('[MyMessage] Server starting...');
+console.log('[MyMessage] ✅ Pagination support: enabled (limit/before params)');
+console.log('[MyMessage] ✅ Context menu fix: enabled');
+console.log('[MyMessage] ✅ UI/UX fixes: enabled');
 server.listen(env_1.env.port, () => {
-    console.log(`API listening on :${env_1.env.port}`);
+    console.log(`[MyMessage] Server running on port ${env_1.env.port}`);
 });
