@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 type Conversation = {
   id: string;
@@ -217,12 +217,11 @@ function openContextMenu(event: MouseEvent, message: Message) {
   event.preventDefault();
   event.stopPropagation();
 
-  contextMenu.value = {
-    visible: true,
-    x: Math.min(event.clientX, window.innerWidth - 230),
-    y: Math.min(event.clientY, window.innerHeight - 220),
-    message,
-  };
+  const menuW = 220, menuH = 160;
+  const x = Math.min(event.clientX, window.innerWidth - menuW - 8);
+  const y = Math.min(event.clientY, window.innerHeight - menuH - 8);
+  console.log('[ContextMenu] open', { x, y, messageId: message.id });
+  contextMenu.value = { visible: true, x, y, message };
 }
 
 function handleReply(message: Message) {
@@ -362,18 +361,23 @@ watch(
   }
 );
 
-window.addEventListener('click', handleGlobalClick);
-window.addEventListener('keydown', handleKeydown);
-window.addEventListener('contextmenu', (event) => {
+function handleGlobalContextMenu(event: MouseEvent) {
   const target = event.target as HTMLElement | null;
   if (!target?.closest('.tm-message-shell')) {
     hideContextMenu();
   }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleGlobalClick);
+  document.addEventListener('keydown', handleKeydown);
+  document.addEventListener('contextmenu', handleGlobalContextMenu);
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('click', handleGlobalClick);
-  window.removeEventListener('keydown', handleKeydown);
+  document.removeEventListener('click', handleGlobalClick);
+  document.removeEventListener('keydown', handleKeydown);
+  document.removeEventListener('contextmenu', handleGlobalContextMenu);
   if (highlightTimer) window.clearTimeout(highlightTimer);
 });
 </script>
@@ -587,6 +591,7 @@ onBeforeUnmount(() => {
         class="tm-context-menu"
         :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
         @click.stop
+        @contextmenu.stop
       >
         <button class="tm-context-menu__item" @click="handleReply(contextMenu.message)">↩ Ответить</button>
         <button class="tm-context-menu__item" @click="handlePin(contextMenu.message)">📌 Закрепить</button>
