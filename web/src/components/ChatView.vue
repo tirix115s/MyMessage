@@ -181,16 +181,18 @@ async function onScroll() {
 
   notifyBottomState();
 
-  if (el.scrollTop < 80 && props.hasMoreOlder && !props.loadingOlder) {
-    const prevHeight = el.scrollHeight;
+  if (el.scrollTop < 120 && props.hasMoreOlder && !props.loadingOlder) {
+    const prevScrollHeight = el.scrollHeight;
+    const prevScrollTop = el.scrollTop;
     emit('loadOlder');
 
     await nextTick();
 
     requestAnimationFrame(() => {
       if (!messagesEl.value) return;
-      const newHeight = messagesEl.value.scrollHeight;
-      messagesEl.value.scrollTop = newHeight - prevHeight;
+      const newScrollHeight = messagesEl.value.scrollHeight;
+      const diff = newScrollHeight - prevScrollHeight;
+      messagesEl.value.scrollTop = prevScrollTop + diff;
       notifyBottomState();
     });
   }
