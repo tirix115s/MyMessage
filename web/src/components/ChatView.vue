@@ -1,0 +1,599 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+
+type Conversation = {
+  id: string;
+  type: 'direct' | 'group' | 'channel';
+  title: string | null;
+};
+
+type MessageReply = {
+  id: string;
+  userId: string;
+  username: string;
+  text: string;
+  createdAt: string;
+};
+
+type Message = {
+  id: string;
+  conversationId: string;
+  userId: string;
+  username: string;
+  text: string;
+  createdAt: string;
+  isRead?: boolean;
+  replyTo: MessageReply | null;
+};
+
+type TimelineItem =
+  | { type: 'day'; key: string; label: string }
+  | { type: 'unread'; key: string; count: number }
+  | {
+      type: 'message';
+      key: string;
+      message: Message;
+      groupedTop: boolean;
+      groupedBottom: boolean;
+      mine: boolean;
+    };
+
+const props = defineProps<{
+  currentUsername: string;
+  activeConversation: Conversation | null;
+  messages: Message[];
+  text: string;
+  canSendMessage: boolean;
+  typingText: string;
+  loadingOlder: boolean;
+  hasMoreOlder: boolean;
+  pendingNewMessagesCount: number;
+  replyToMessage: Message | null;
+  pinnedMessage: Message | null;
+}>();
+
+const emit = defineEmits<{
+  openInfo: [];
+  updateText: [value: string];
+  send: [];
+  loadOlder: [];
+  nearBottomChange: [value: boolean];
+  reachLatest: [];
+  jumpToLatest: [];
+  replyToMessage: [message: Message];
+  clearReply: [];
+  pinMessage: [message: Message];
+  jumpToMessage: [messageId: string];
+}>();
+
+const messagesEl = ref<HTMLElement | null>(null);
+const wasNearBottom = ref(true);
+
+const contextMenu = ref<{
+  visible: boolean;
+  x: number;
+  y: number;
+  message: Message | null;
+}>({
+  visible: false,
+  x: 0,
+  y: 0,
+  message: null,
+});
+
+const highlightedMessageId = ref<string | null>(null);
+let highlightTimer: number | null = null;
+
+function label(conversation: Conversation | null) {
+  if (!conversation) return 'Выберите чат';
+  return conversation.title || conversation.type;
+}
+
+function initials(value: string) {
+  return value.trim().slice(0, 2).toUpperCase();
+}
+
+function avatarStyle(seed: string) {
+  const colors = [
+    ['#5dbeff', '#3478f6'],
+    ['#67d67c', '#2e9e52'],
+    ['#ffb65d', '#f07a2f'],
+    ['#ff7aa2', '#d94b78'],
+    ['#b18cff', '#7a5af8'],
+    ['#66d1c1', '#2c9f90'],
+  ];
+
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+  }
+
+  const pair = colors[Math.abs(hash) % colors.length];
+  return {
+    background: `linear-gradient(135deg, ${pair[0]}, ${pair[1]})`,
+  };
+}
+
+function authorColor(seed: string) {
+  const colors = ['#64b5ff', '#59d46a', '#ffb347', '#ff7fa8', '#b78cff', '#72e6d4'];
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return colors[Math.abs(hash) % colors.length];
+}
+
+function formatTime(value: string) {
+  return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function sameDay(a: string, b: string) {
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
+}
+
+function formatDayLabel(value: string) {
+  const date = new Date(value);
+  const now = new Date();
+
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const yesterday = today - 24 * 60 * 60 * 1000;
+  const current = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+
+  if (current === today) return 'Сегодня';
+  if (current === yesterday) return 'Вчера';
+
+  return date.toLocaleDateString([], {
+    day: 'numeric',
+    month: 'long',
+  });
+}
+
+function isNearBottom() {
+  const el = messagesEl.value;
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+}
+
+function notifyBottomState() {
+  const near = isNearBottom();
+  wasNearBottom.value = near;
+  emit('nearBottomChange', near);
+
+  if (near) emit('reachLatest');
+}
+
+function scrollToBottom() {
+  const el = messagesEl.value;
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
+  notifyBottomState();
+}
+
+async function onScroll() {
+  hideContextMenu();
+
+  const el = messagesEl.value;
+  if (!el) return;
+
+  notifyBottomState();
+
+  if (el.scrollTop < 80 && props.hasMoreOlder && !props.loadingOlder) {
+    const prevHeight = el.scrollHeight;
+    emit('loadOlder');
+
+    await nextTick();
+
+    requestAnimationFrame(() => {
+      if (!messagesEl.value) return;
+      const newHeight = messagesEl.value.scrollHeight;
+      messagesEl.value.scrollTop = newHeight - prevHeight;
+      notifyBottomState();
+    });
+  }
+}
+
+async function handleJumpToLatest() {
+  await nextTick();
+  scrollToBottom();
+  emit('jumpToLatest');
+}
+
+function previewText(value: string) {
+  return value.length > 90 ? `${value.slice(0, 90)}…` : value;
+}
+
+function hideContextMenu() {
+  contextMenu.value.visible = false;
+  contextMenu.value.message = null;
+}
+
+function openContextMenu(event: MouseEvent, message: Message) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  contextMenu.value = {
+    visible: true,
+    x: Math.min(event.clientX, window.innerWidth - 230),
+    y: Math.min(event.clientY, window.innerHeight - 220),
+    message,
+  };
+}
+
+function handleReply(message: Message) {
+  emit('replyToMessage', message);
+  hideContextMenu();
+}
+
+function handlePin(message: Message) {
+  emit('pinMessage', message);
+  hideContextMenu();
+}
+
+function flashMessage(messageId: string) {
+  highlightedMessageId.value = messageId;
+
+  if (highlightTimer) {
+    window.clearTimeout(highlightTimer);
+  }
+
+  highlightTimer = window.setTimeout(() => {
+    highlightedMessageId.value = null;
+    highlightTimer = null;
+  }, 1800);
+}
+
+function jumpToMessageInsideList(messageId: string) {
+  const el = document.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
+  if (!el) return;
+
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  flashMessage(messageId);
+}
+
+function handleJumpToMessage(messageId: string) {
+  emit('jumpToMessage', messageId);
+
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      jumpToMessageInsideList(messageId);
+    }, 120);
+  });
+
+  hideContextMenu();
+}
+
+function handleGlobalClick() {
+  hideContextMenu();
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') hideContextMenu();
+}
+
+const firstUnreadIndex = computed(() => {
+  if (props.pendingNewMessagesCount <= 0) return -1;
+  return Math.max(0, props.messages.length - props.pendingNewMessagesCount);
+});
+
+const timeline = computed<TimelineItem[]>(() => {
+  const items: TimelineItem[] = [];
+
+  for (let i = 0; i < props.messages.length; i += 1) {
+    const msg = props.messages[i];
+    const prev = props.messages[i - 1];
+    const next = props.messages[i + 1];
+    const mine = msg.username === props.currentUsername;
+
+    if (!prev || !sameDay(prev.createdAt, msg.createdAt)) {
+      items.push({
+        type: 'day',
+        key: `day-${msg.id}`,
+        label: formatDayLabel(msg.createdAt),
+      });
+    }
+
+    if (firstUnreadIndex.value >= 0 && i === firstUnreadIndex.value) {
+      items.push({
+        type: 'unread',
+        key: `unread-${msg.id}`,
+        count: props.pendingNewMessagesCount,
+      });
+    }
+
+    const groupedTop =
+      !!prev &&
+      prev.username === msg.username &&
+      sameDay(prev.createdAt, msg.createdAt) &&
+      Math.abs(new Date(msg.createdAt).getTime() - new Date(prev.createdAt).getTime()) < 5 * 60 * 1000;
+
+    const groupedBottom =
+      !!next &&
+      next.username === msg.username &&
+      sameDay(next.createdAt, msg.createdAt) &&
+      Math.abs(new Date(next.createdAt).getTime() - new Date(msg.createdAt).getTime()) < 5 * 60 * 1000;
+
+    items.push({
+      type: 'message',
+      key: msg.id,
+      message: msg,
+      mine,
+      groupedTop,
+      groupedBottom,
+    });
+  }
+
+  return items;
+});
+
+watch(
+  () => props.activeConversation?.id,
+  async () => {
+    hideContextMenu();
+    await nextTick();
+    scrollToBottom();
+  }
+);
+
+watch(
+  () => props.messages.length,
+  async () => {
+    await nextTick();
+    if (wasNearBottom.value) {
+      scrollToBottom();
+    } else {
+      notifyBottomState();
+    }
+  }
+);
+
+watch(
+  () => props.pendingNewMessagesCount,
+  async (value, prev) => {
+    if (value === 0 && prev > 0) {
+      await nextTick();
+      scrollToBottom();
+    }
+  }
+);
+
+window.addEventListener('click', handleGlobalClick);
+window.addEventListener('keydown', handleKeydown);
+window.addEventListener('contextmenu', (event) => {
+  const target = event.target as HTMLElement | null;
+  if (!target?.closest('.tm-message-shell')) {
+    hideContextMenu();
+  }
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('click', handleGlobalClick);
+  window.removeEventListener('keydown', handleKeydown);
+  if (highlightTimer) window.clearTimeout(highlightTimer);
+});
+</script>
+
+<template>
+  <main class="tm-chat tm-chat-telegramish">
+    <div class="tm-header tm-chat-header">
+      <div class="tm-chat-header__left">
+        <button class="tm-chat-header__title" @click="emit('openInfo')">
+          <div class="tm-avatar">
+            {{ initials(label(activeConversation)) }}
+          </div>
+
+          <div>
+            <div class="tm-chat-header__name">{{ label(activeConversation) }}</div>
+            <div class="tm-muted tm-chat-header__meta">
+              {{ typingText || activeConversation?.type || 'Telegram-like chat' }}
+            </div>
+          </div>
+        </button>
+      </div>
+
+      <div class="tm-chat-header__actions">
+        <button class="tm-icon-btn">🔍</button>
+        <button class="tm-icon-btn" @click="emit('openInfo')">⋮</button>
+      </div>
+    </div>
+
+    <button
+      v-if="activeConversation && pinnedMessage"
+      class="tm-pinned-strip"
+      @click="handleJumpToMessage(pinnedMessage.id)"
+      title="Перейти к закреплённому сообщению"
+    >
+      <div class="tm-pinned-strip__title">Закреплённое сообщение</div>
+      <div class="tm-pinned-strip__text">
+        <span class="tm-pinned-strip__author">{{ pinnedMessage.username }}</span>
+        <span>{{ previewText(pinnedMessage.text) }}</span>
+      </div>
+    </button>
+
+    <div v-else-if="activeConversation" class="tm-pinned-strip tm-pinned-strip--placeholder">
+      <div class="tm-pinned-strip__title">Закреплённое сообщение</div>
+      <div class="tm-pinned-strip__text">Здесь будет pinned message block, как в Telegram.</div>
+    </div>
+
+    <div class="tm-messages-wrap">
+      <div ref="messagesEl" class="tm-messages tm-messages-telegramish" @scroll.passive="onScroll">
+        <div v-if="loadingOlder" class="tm-muted" style="text-align: center; margin-bottom: 12px;">
+          Загрузка старых сообщений...
+        </div>
+
+        <div
+          v-else-if="hasMoreOlder"
+          class="tm-muted"
+          style="text-align: center; margin-bottom: 12px;"
+        >
+          Прокрути вверх для загрузки старых сообщений
+        </div>
+
+        <div v-if="!activeConversation" class="tm-empty-chat-state">
+          <div class="tm-empty-chat-card">
+            <div class="tm-avatar large">M</div>
+            <div class="tm-panel-title" style="margin-top: 14px;">MyMessage</div>
+            <div class="tm-muted" style="margin-top: 8px;">
+              Выбери чат слева или создай новый через меню.
+            </div>
+          </div>
+        </div>
+
+        <template v-for="item in timeline" :key="item.key">
+          <div v-if="item.type === 'day'" class="tm-day-separator">
+            <span>{{ item.label }}</span>
+          </div>
+
+          <div v-else-if="item.type === 'unread'" class="tm-unread-separator">
+            <div class="tm-unread-separator__line"></div>
+            <div class="tm-unread-separator__badge">
+              {{ item.count }} новых {{ item.count === 1 ? 'сообщение' : item.count < 5 ? 'сообщения' : 'сообщений' }}
+            </div>
+            <div class="tm-unread-separator__line"></div>
+          </div>
+
+          <div
+            v-else
+            :data-message-id="item.message.id"
+            :class="[
+              'tm-message-shell',
+              item.mine ? 'mine' : 'other',
+              item.groupedTop ? 'grouped-top' : '',
+              item.groupedBottom ? 'grouped-bottom' : '',
+              highlightedMessageId === item.message.id ? 'is-highlighted' : '',
+            ]"
+            @contextmenu.prevent.stop="openContextMenu($event, item.message)"
+          >
+            <div
+              v-if="!item.mine"
+              class="tm-message-avatar"
+              :class="item.groupedTop ? 'is-hidden' : ''"
+              :style="avatarStyle(item.message.username)"
+            >
+              {{ initials(item.message.username) }}
+            </div>
+
+            <div
+              :class="[
+                'tm-message-card',
+                item.mine ? 'mine' : 'other',
+                item.groupedTop ? 'grouped-top' : '',
+                item.groupedBottom ? 'grouped-bottom' : '',
+              ]"
+            >
+              <div
+                v-if="!item.groupedTop"
+                class="tm-message-author"
+                :style="{ color: authorColor(item.message.username) }"
+              >
+                {{ item.message.username }}
+              </div>
+
+              <div
+                v-if="item.message.replyTo"
+                class="tm-quoted-reply tm-quoted-reply--telegramish"
+                @click.stop="handleJumpToMessage(item.message.replyTo.id)"
+                title="Перейти к сообщению, на которое отвечают"
+              >
+                <div class="tm-quoted-reply__bar"></div>
+                <div class="tm-quoted-reply__content">
+                  <div class="tm-quoted-reply__author">
+                    {{ item.message.replyTo.username }}
+                  </div>
+                  <div class="tm-quoted-reply__text">
+                    {{ previewText(item.message.replyTo.text) }}
+                  </div>
+                </div>
+              </div>
+
+              <div class="tm-message-text">
+                {{ item.message.text }}
+              </div>
+
+              <div class="tm-message-meta">
+                <template v-if="item.message.replyTo">
+                  <span class="tm-reply-inline-icon" title="Ответ">↩</span>
+                </template>
+                <span>{{ formatTime(item.message.createdAt) }}</span>
+                <template v-if="item.mine">
+                  <span v-if="item.message.isRead" class="tm-read-mark is-read">✓✓</span>
+                  <span v-else class="tm-read-mark">✓</span>
+                </template>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="tm-composer tm-composer-telegramish">
+      <div
+        v-if="pendingNewMessagesCount > 0 && activeConversation"
+        class="tm-new-messages-floating"
+      >
+        <button class="tm-new-messages-btn" @click="handleJumpToLatest">
+          <span>
+            ↓ {{ pendingNewMessagesCount }} нов{{ pendingNewMessagesCount === 1 ? 'ое сообщение' : pendingNewMessagesCount < 5 ? 'ых сообщения' : 'ых сообщений' }}
+          </span>
+        </button>
+      </div>
+
+      <div v-if="replyToMessage" class="tm-reply-preview">
+        <div class="tm-reply-preview__bar"></div>
+        <div class="tm-reply-preview__content">
+          <div class="tm-reply-preview__title">Ответ на {{ replyToMessage.username }}</div>
+          <div class="tm-reply-preview__text">{{ previewText(replyToMessage.text) }}</div>
+        </div>
+        <button class="tm-reply-preview__close" @click="emit('clearReply')">✕</button>
+      </div>
+
+      <div
+        v-if="activeConversation?.type === 'channel' && !canSendMessage"
+        style="
+          margin-bottom: 10px;
+          color: #ffb7c5;
+          font-size: 13px;
+          padding: 10px 12px;
+          background: rgba(58,31,38,.55);
+          border: 1px solid rgba(255,107,129,.18);
+          border-radius: 12px;
+        "
+      >
+        У тебя только режим чтения: писать в канал могут только owner/admin.
+      </div>
+
+      <div class="tm-composer-row tm-composer-row--telegramish">
+        <button class="tm-icon-btn" :disabled="!activeConversation || !canSendMessage">📎</button>
+        <input
+          class="tm-input"
+          :value="text"
+          @input="emit('updateText', ($event.target as HTMLInputElement).value)"
+          @keyup.enter="emit('send')"
+          :placeholder="activeConversation?.type === 'channel' && !canSendMessage ? 'Только чтение' : 'Написать сообщение...'"
+          :disabled="!activeConversation || !canSendMessage"
+        />
+        <button class="tm-primary" @click="emit('send')" :disabled="!activeConversation || !canSendMessage">
+          ➤
+        </button>
+      </div>
+
+      <div
+        v-if="contextMenu.visible && contextMenu.message"
+        class="tm-context-menu"
+        :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+        @click.stop
+      >
+        <button class="tm-context-menu__item" @click="handleReply(contextMenu.message)">↩ Ответить</button>
+        <button class="tm-context-menu__item" @click="handlePin(contextMenu.message)">📌 Закрепить</button>
+        <button class="tm-context-menu__item" @click="handleJumpToMessage(contextMenu.message.id)">
+          🎯 Перейти к сообщению
+        </button>
+      </div>
+    </div>
+  </main>
+</template>

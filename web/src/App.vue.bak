@@ -1,0 +1,652 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { api, setToken } from './services/api';
+import { connectSocket, disconnectSocket, getSocket } from './services/socket';
+import './styles/app.css';
+
+import MainDrawer from './components/MainDrawer.vue';
+import SidebarChats from './components/SidebarChats.vue';
+import ChatView from './components/ChatView.vue';
+import RightInfoPanel from './components/RightInfoPanel.vue';
+import CreateGroupModal from './components/CreateGroupModal.vue';
+import CreateChannelModal from './components/CreateChannelModal.vue';
+import ChatInfoModal from './components/ChatInfoModal.vue';
+
+type User = {
+  id: string;
+  username: string;
+};
+
+type Conversation = {
+  id: string;
+  type: 'direct' | 'group' | 'channel';
+  title: string | null;
+  createdAt: string;
+  lastMessageText: string | null;
+  lastMessageCreatedAt: string | null;
+  unreadCount: number;
+};
+
+type Message = {
+  id: string;
+  conversationId: string;
+  userId: string;
+  username: string;
+  text: string;
+  createdAt: string;
+  isRead?: boolean;
+};
+
+type Participant = {
+  userId: string;
+  username: string;
+  role: 'owner' | 'admin' | 'member';
+  joinedAt: string;
+};
+
+const token = ref<string | null>(localStorage.getItem('token'));
+const currentUser = ref<{ username: string } | null>(null);
+
+const mode = ref<'auth' | 'app'>('auth');
+const username = ref('');
+const password = ref('');
+const errorText = ref('');
+
+const users = ref<User[]>([]);
+const conversations = ref<Conversation[]>([]);
+const activeConversationId = ref<string | null>(null);
+const messages = ref<Message[]>([]);
+const participants = ref<Participant[]>([]);
+const text = ref('');
+
+const loadingOlder = ref(false);
+const hasMoreOlder = ref(true);
+
+const onlineUserIds = ref<string[]>([]);
+const typingText = ref('');
+let typingTimeout: number | null = null;
+
+const searchQuery = ref('');
+const isMenuOpen = ref(false);
+const isInfoOpen = ref(true);
+const isChatInfoModalOpen = ref(false);
+const isCreateGroupModalOpen = ref(false);
+const isCreateChannelModalOpen = ref(false);
+
+const groupTitle = ref('');
+const selectedGroupUserIds = ref<string[]>([]);
+const channelTitle = ref('');
+const selectedParticipantToAdd = ref('');
+
+const activeConversation = computed(() =>
+  conversations.value.find((item) => item.id === activeConversationId.value) || null
+);
+
+const myParticipant = computed(() =>
+  participants.value.find((p) => p.username === currentUser.value?.username) || null
+);
+
+const canManageParticipants = computed(() => {
+  if (!activeConversation.value) return false;
+  if (activeConversation.value.type === 'direct') return false;
+  return myParticipant.value?.role === 'owner' || myParticipant.value?.role === 'admin';
+});
+
+const canChangeRoles = computed(() => {
+  if (!activeConversation.value) return false;
+  if (activeConversation.value.type === 'direct') return false;
+  return myParticipant.value?.role === 'owner';
+});
+
+const availableUsersToAdd = computed(() => {
+  const existingIds = new Set(participants.value.map((p) => p.userId));
+  return users.value.filter((u) => !existingIds.has(u.id));
+});
+
+const filteredConversations = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase();
+  if (!q) return conversations.value;
+
+  return conversations.value.filter((conversation) => {
+    const title = (conversation.title || conversation.type || '').toLowerCase();
+    const preview = (conversation.lastMessageText || '').toLowerCase();
+    return title.includes(q) || preview.includes(q);
+  });
+});
+
+const canSendMessage = computed(() => {
+  if (!activeConversation.value) return false;
+  if (activeConversation.value.type !== 'channel') return true;
+  return myParticipant.value?.role === 'owner' || myParticipant.value?.role === 'admin';
+});
+
+const unreadMap = computed(() => {
+  return conversations.value.reduce<Record<string, number>>((acc, conversation) => {
+    acc[conversation.id] = conversation.unreadCount || 0;
+    return acc;
+  }, {});
+});
+
+function toggleGroupUser(userId: string) {
+  if (selectedGroupUserIds.value.includes(userId)) {
+    selectedGroupUserIds.value = selectedGroupUserIds.value.filter((id) => id !== userId);
+  } else {
+    selectedGroupUserIds.value = [...selectedGroupUserIds.value, userId];
+  }
+}
+
+function closeTopOverlay() {
+  if (isChatInfoModalOpen.value) {
+    isChatInfoModalOpen.value = false;
+    return;
+  }
+
+  if (isCreateGroupModalOpen.value) {
+    isCreateGroupModalOpen.value = false;
+    return;
+  }
+
+  if (isCreateChannelModalOpen.value) {
+    isCreateChannelModalOpen.value = false;
+    return;
+  }
+
+  if (isMenuOpen.value) {
+    isMenuOpen.value = false;
+  }
+}
+
+function onKeyDown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    closeTopOverlay();
+  }
+}
+
+function emitTypingStart() {
+  const socket = getSocket();
+  if (!socket || !activeConversationId.value) return;
+
+  socket.emit('typing:start', { conversationId: activeConversationId.value });
+
+  if (typingTimeout) {
+    window.clearTimeout(typingTimeout);
+  }
+
+  typingTimeout = window.setTimeout(() => {
+    emitTypingStop();
+  }, 1200);
+}
+
+function emitTypingStop() {
+  const socket = getSocket();
+  if (!socket || !activeConversationId.value) return;
+
+  socket.emit('typing:stop', { conversationId: activeConversationId.value });
+
+  if (typingTimeout) {
+    window.clearTimeout(typingTimeout);
+    typingTimeout = null;
+  }
+}
+
+watch(text, (value) => {
+  if (!activeConversationId.value) return;
+
+  if (value.trim()) {
+    emitTypingStart();
+  } else {
+    emitTypingStop();
+  }
+});
+
+onMounted(() => {
+  window.addEventListener('keydown', onKeyDown);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeyDown);
+});
+
+async function register() {
+  errorText.value = '';
+
+  try {
+    const response = await api.post('/auth/register', {
+      username: username.value,
+      password: password.value,
+    });
+
+    token.value = response.data.token;
+    currentUser.value = { username: response.data.user.username };
+    localStorage.setItem('token', token.value!);
+    setToken(token.value);
+    await startApp();
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Register error';
+  }
+}
+
+async function login() {
+  errorText.value = '';
+
+  try {
+    const response = await api.post('/auth/login', {
+      username: username.value,
+      password: password.value,
+    });
+
+    token.value = response.data.token;
+    currentUser.value = { username: username.value };
+    localStorage.setItem('token', token.value!);
+    setToken(token.value);
+    await startApp();
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Login error';
+  }
+}
+
+async function loadUsers() {
+  const response = await api.get('/users');
+  users.value = response.data.users;
+}
+
+async function loadConversations() {
+  const response = await api.get('/conversations');
+  conversations.value = response.data.conversations;
+}
+
+async function loadMessages(conversationId: string) {
+  const response = await api.get(`/conversations/${conversationId}/messages?limit=30`);
+  messages.value = response.data.messages;
+  hasMoreOlder.value = !!response.data.hasMore;
+}
+
+async function loadOlderMessages() {
+  if (!activeConversationId.value || loadingOlder.value || !hasMoreOlder.value || messages.value.length === 0) {
+    return;
+  }
+
+  loadingOlder.value = true;
+
+  try {
+    const oldest = messages.value[0];
+    const response = await api.get(
+      `/conversations/${activeConversationId.value}/messages`,
+      {
+        params: {
+          limit: 30,
+          before: oldest.createdAt,
+        },
+      }
+    );
+
+    const older = response.data.messages || [];
+    messages.value = [...older, ...messages.value];
+    hasMoreOlder.value = !!response.data.hasMore;
+  } finally {
+    loadingOlder.value = false;
+  }
+}
+
+async function loadParticipants(conversationId: string) {
+  const response = await api.get(`/conversations/${conversationId}/participants`);
+  participants.value = response.data.participants;
+}
+
+async function markConversationRead(conversationId: string) {
+  await api.post(`/conversations/${conversationId}/read`);
+}
+
+async function refreshActiveConversationMessages() {
+  if (!activeConversationId.value) return;
+  await loadMessages(activeConversationId.value);
+}
+
+async function openConversation(conversationId: string) {
+  activeConversationId.value = conversationId;
+  loadingOlder.value = false;
+  hasMoreOlder.value = true;
+  typingText.value = '';
+
+  await loadMessages(conversationId);
+  await loadParticipants(conversationId);
+  await markConversationRead(conversationId);
+  await loadConversations();
+
+  const socket = getSocket();
+  if (!socket) return;
+
+  socket.emit('conversation:join', { conversationId }, () => {});
+}
+
+async function createDirectConversation(userId: string) {
+  try {
+    const response = await api.post('/conversations/direct', { userId });
+    await loadConversations();
+    await openConversation(response.data.id);
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Failed to create direct chat';
+  }
+}
+
+async function createGroup() {
+  try {
+    if (!groupTitle.value.trim()) {
+      errorText.value = 'Название группы ��бязательно';
+      return;
+    }
+
+    const response = await api.post('/conversations/group', {
+      title: groupTitle.value.trim(),
+      participantIds: selectedGroupUserIds.value,
+    });
+
+    groupTitle.value = '';
+    selectedGroupUserIds.value = [];
+    isCreateGroupModalOpen.value = false;
+
+    await loadConversations();
+    await openConversation(response.data.id);
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Failed to create group';
+  }
+}
+
+async function createChannel() {
+  try {
+    if (!channelTitle.value.trim()) {
+      errorText.value = 'Название канала обязательно';
+      return;
+    }
+
+    const response = await api.post('/conversations/channel', {
+      title: channelTitle.value.trim(),
+    });
+
+    channelTitle.value = '';
+    isCreateChannelModalOpen.value = false;
+
+    await loadConversations();
+    await openConversation(response.data.id);
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Failed to create channel';
+  }
+}
+
+async function addParticipant() {
+  if (!activeConversationId.value || !selectedParticipantToAdd.value || !canManageParticipants.value) return;
+
+  try {
+    await api.post(`/conversations/${activeConversationId.value}/participants`, {
+      userId: selectedParticipantToAdd.value,
+    });
+
+    selectedParticipantToAdd.value = '';
+    await loadParticipants(activeConversationId.value);
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Failed to add participant';
+  }
+}
+
+async function changeRole(userId: string, role: 'owner' | 'admin' | 'member') {
+  if (!activeConversationId.value || !canChangeRoles.value) return;
+
+  try {
+    await api.patch(`/conversations/${activeConversationId.value}/participants/${userId}`, {
+      role,
+    });
+
+    await loadParticipants(activeConversationId.value);
+  } catch (error: any) {
+    errorText.value = error?.response?.data?.error || error?.message || 'Failed to change role';
+  }
+}
+
+async function sendMessage() {
+  if (!text.value.trim() || !activeConversationId.value) return;
+
+  const socket = getSocket();
+  if (!socket) return;
+
+  socket.emit(
+    'message:send',
+    {
+      conversationId: activeConversationId.value,
+      text: text.value.trim(),
+    },
+    async (ack: any) => {
+      if (!ack?.ok) {
+        errorText.value = ack?.error || 'Message send failed';
+        return;
+      }
+
+      text.value = '';
+      emitTypingStop();
+      await markConversationRead(activeConversationId.value!);
+      await loadConversations();
+      await refreshActiveConversationMessages();
+    }
+  );
+}
+
+async function startApp() {
+  if (!token.value) return;
+
+  mode.value = 'app';
+
+  await loadUsers();
+  await loadConversations();
+
+  const socket = connectSocket(token.value);
+
+  socket.off('users:online');
+  socket.off('message:new');
+  socket.off('conversation:updated');
+  socket.off('typing:update');
+
+  socket.on('users:online', (payload: { userIds: string[] }) => {
+    onlineUserIds.value = payload.userIds || [];
+  });
+
+  socket.on('typing:update', (payload: { conversationId: string; username: string; isTyping: boolean }) => {
+    if (payload.conversationId !== activeConversationId.value) return;
+
+    if (payload.isTyping) {
+      typingText.value = `${payload.username} печатает...`;
+    } else {
+      typingText.value = '';
+    }
+  });
+
+  socket.on('message:new', async (payload: { message: Message }) => {
+    if (payload.message.conversationId === activeConversationId.value) {
+      await markConversationRead(payload.message.conversationId);
+      await refreshActiveConversationMessages();
+    }
+
+    await loadConversations();
+  });
+
+  socket.on('conversation:updated', async (payload: { conversationId?: string }) => {
+    await loadConversations();
+
+    if (payload?.conversationId && payload.conversationId === activeConversationId.value) {
+      await refreshActiveConversationMessages();
+    }
+  });
+
+  if (conversations.value.length > 0) {
+    await openConversation(conversations.value[0].id);
+  }
+}
+
+function logout() {
+  emitTypingStop();
+
+  token.value = null;
+  currentUser.value = null;
+  localStorage.removeItem('token');
+  setToken(null);
+  disconnectSocket();
+
+  mode.value = 'auth';
+  users.value = [];
+  conversations.value = [];
+  activeConversationId.value = null;
+  messages.value = [];
+  participants.value = [];
+  text.value = '';
+  loadingOlder.value = false;
+  hasMoreOlder.value = true;
+  onlineUserIds.value = [];
+  typingText.value = '';
+  isMenuOpen.value = false;
+  isInfoOpen.value = true;
+  isChatInfoModalOpen.value = false;
+  isCreateGroupModalOpen.value = false;
+  isCreateChannelModalOpen.value = false;
+}
+
+if (token.value) {
+  setToken(token.value);
+  startApp();
+}
+</script>
+
+<template>
+  <div style="height: 100%;">
+    <template v-if="mode === 'auth'">
+      <div
+        style="
+          min-height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: linear-gradient(135deg, #17212b, #0e1621);
+        "
+      >
+        <div
+          style="
+            width: 360px;
+            background: #17212b;
+            border: 1px solid #22303d;
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 20px 60px rgba(0,0,0,.35);
+          "
+        >
+          <h1 style="margin: 0 0 18px 0; font-size: 28px;">MyMessage</h1>
+          <p style="margin: 0 0 18px 0; color: #8ea2b5;">Telegram-like messenger prototype</p>
+
+          <div
+            v-if="errorText"
+            style="background: #3a1f26; color: #ffb7c5; padding: 10px; margin-bottom: 16px; border-radius: 10px;"
+          >
+            {{ errorText }}
+          </div>
+
+          <div style="display: grid; gap: 12px;">
+            <input v-model="username" class="tm-input" placeholder="Username" />
+            <input v-model="password" class="tm-input" type="password" placeholder="Password" />
+
+            <div style="display: flex; gap: 10px;">
+              <button class="tm-primary" style="flex: 1;" @click="register">Register</button>
+              <button class="tm-secondary" style="flex: 1;" @click="login">Login</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <template v-else>
+      <div class="tm-shell">
+        <SidebarChats
+          :users="users"
+          :conversations="filteredConversations"
+          :active-conversation-id="activeConversationId"
+          :search-query="searchQuery"
+          :unread-map="unreadMap"
+          :online-user-ids="onlineUserIds"
+          @menu="isMenuOpen = true"
+          @search="searchQuery = $event"
+          @open-direct="createDirectConversation"
+          @open-conversation="openConversation"
+        />
+
+        <ChatView
+          :current-username="currentUser?.username || ''"
+          :active-conversation="activeConversation"
+          :messages="messages"
+          :text="text"
+          :can-send-message="canSendMessage"
+          :typing-text="typingText"
+          :loading-older="loadingOlder"
+          :has-more-older="hasMoreOlder"
+          @open-info="isChatInfoModalOpen = true"
+          @update-text="text = $event"
+          @send="sendMessage"
+          @load-older="loadOlderMessages"
+        />
+
+        <RightInfoPanel
+          v-if="isInfoOpen"
+          :active-conversation="activeConversation"
+          :participants="participants"
+          :available-users-to-add="availableUsersToAdd"
+          :selected-participant-to-add="selectedParticipantToAdd"
+          :can-manage-participants="canManageParticipants"
+          :can-change-roles="canChangeRoles"
+          :current-username="currentUser?.username || ''"
+          @close="isInfoOpen = false"
+          @update-selected-participant="selectedParticipantToAdd = $event"
+          @add-participant="addParticipant"
+          @change-role="changeRole"
+        />
+        <div v-else class="tm-info" style="align-items: center; justify-content: center;">
+          <button class="tm-secondary" @click="isInfoOpen = true">Открыть инфо панель</button>
+        </div>
+      </div>
+
+      <div
+        v-if="isMenuOpen || isChatInfoModalOpen || isCreateGroupModalOpen || isCreateChannelModalOpen"
+        class="tm-overlay"
+        @click="closeTopOverlay"
+      />
+
+      <MainDrawer
+        v-if="isMenuOpen"
+        :current-username="currentUser?.username || 'User'"
+        @close="isMenuOpen = false"
+        @create-group="isMenuOpen = false; isCreateGroupModalOpen = true"
+        @create-channel="isMenuOpen = false; isCreateChannelModalOpen = true"
+        @logout="logout"
+      />
+
+      <CreateGroupModal
+        v-if="isCreateGroupModalOpen"
+        :users="users"
+        :title="groupTitle"
+        :selected-user-ids="selectedGroupUserIds"
+        @close="isCreateGroupModalOpen = false"
+        @update-title="groupTitle = $event"
+        @toggle-user="toggleGroupUser"
+        @submit="createGroup"
+      />
+
+      <CreateChannelModal
+        v-if="isCreateChannelModalOpen"
+        :title="channelTitle"
+        @close="isCreateChannelModalOpen = false"
+        @update-title="channelTitle = $event"
+        @submit="createChannel"
+      />
+
+      <ChatInfoModal
+        v-if="isChatInfoModalOpen"
+        :active-conversation="activeConversation"
+        :participants="participants"
+        @close="isChatInfoModalOpen = false"
+      />
+    </template>
+  </div>
+</template>

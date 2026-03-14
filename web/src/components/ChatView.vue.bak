@@ -1,0 +1,251 @@
+<script setup lang="ts">
+import { nextTick, ref, watch } from 'vue';
+
+type Conversation = {
+  id: string;
+  type: 'direct' | 'group' | 'channel';
+  title: string | null;
+};
+
+type Message = {
+  id: string;
+  userId?: string;
+  username: string;
+  text: string;
+  createdAt: string;
+  isRead?: boolean;
+};
+
+const props = defineProps<{
+  currentUsername: string;
+  activeConversation: Conversation | null;
+  messages: Message[];
+  text: string;
+  canSendMessage: boolean;
+  typingText: string;
+  loadingOlder: boolean;
+  hasMoreOlder: boolean;
+}>();
+
+const emit = defineEmits<{
+  openInfo: [];
+  updateText: [value: string];
+  send: [];
+  loadOlder: [];
+}>();
+
+const messagesEl = ref<HTMLElement | null>(null);
+const wasNearBottom = ref(true);
+
+function label(conversation: Conversation | null) {
+  if (!conversation) return 'Выберите чат';
+  return conversation.title || conversation.type;
+}
+
+function initials(value: string) {
+  return value.trim().slice(0, 1).toUpperCase();
+}
+
+function formatTime(value: string) {
+  return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function isNearBottom() {
+  const el = messagesEl.value;
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+}
+
+function scrollToBottom() {
+  const el = messagesEl.value;
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
+}
+
+async function onScroll() {
+  const el = messagesEl.value;
+  if (!el) return;
+
+  wasNearBottom.value = isNearBottom();
+
+  if (el.scrollTop < 80 && props.hasMoreOlder && !props.loadingOlder) {
+    const prevHeight = el.scrollHeight;
+    emit('loadOlder');
+
+    await nextTick();
+
+    requestAnimationFrame(() => {
+      if (!messagesEl.value) return;
+      const newHeight = messagesEl.value.scrollHeight;
+      messagesEl.value.scrollTop = newHeight - prevHeight;
+    });
+  }
+}
+
+watch(
+  () => props.activeConversation?.id,
+  async () => {
+    await nextTick();
+    scrollToBottom();
+  }
+);
+
+watch(
+  () => props.messages.length,
+  async () => {
+    await nextTick();
+    if (wasNearBottom.value) {
+      scrollToBottom();
+    }
+  }
+);
+</script>
+
+<template>
+  <main class="tm-chat">
+    <div class="tm-header">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+        <button
+          @click="emit('openInfo')"
+          style="
+            flex: 1;
+            text-align: left;
+            border: none;
+            background: transparent;
+            color: inherit;
+            padding: 0;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+          "
+        >
+          <div class="tm-avatar">
+            {{ initials(label(activeConversation)) }}
+          </div>
+
+          <div>
+            <div style="font-size: 18px; font-weight: bold;">{{ label(activeConversation) }}</div>
+            <div class="tm-muted" style="margin-top: 4px; font-size: 13px;">
+              {{ typingText || activeConversation?.type || 'Telegram-like chat' }}
+            </div>
+          </div>
+        </button>
+
+        <div style="display: flex; gap: 8px;">
+          <button class="tm-icon-btn">🔍</button>
+          <button class="tm-icon-btn" @click="emit('openInfo')">⋮</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="activeConversation" class="tm-pinned-bar">
+      <div class="tm-pinned-label">Закреплённое сообщение</div>
+      <div class="tm-muted" style="margin-top: 6px;">
+        Здесь будет pinned message block, как в Telegram.
+      </div>
+    </div>
+
+    <div class="tm-messages-wrap">
+      <div ref="messagesEl" class="tm-messages" @scroll.passive="onScroll">
+        <div v-if="loadingOlder" class="tm-muted" style="text-align: center; margin-bottom: 12px;">
+          Загрузка старых сообщений...
+        </div>
+
+        <div
+          v-else-if="hasMoreOlder"
+          class="tm-muted"
+          style="text-align: center; margin-bottom: 12px;"
+        >
+          Прокрути вверх для загрузки старых сообщений
+        </div>
+
+        <div v-if="!activeConversation" class="tm-muted" style="padding-top: 24px;">
+          Выбери чат слева или создай новый через меню.
+        </div>
+
+        <div
+          v-for="msg in messages"
+          :key="msg.id"
+          :class="['tm-message-row', msg.username === currentUsername ? 'mine' : 'other']"
+        >
+          <div :class="['tm-bubble', msg.username === currentUsername ? 'mine' : 'other']">
+            <div
+              v-if="msg.username !== currentUsername"
+              style="font-size: 12px; color: #7cc3ff; margin-bottom: 4px; font-weight: bold;"
+            >
+              {{ msg.username }}
+            </div>
+
+            <div style="font-size: 15px; line-height: 1.4;">
+              {{ msg.text }}
+            </div>
+
+            <div
+              style="
+                margin-top: 6px;
+                font-size: 11px;
+                display: flex;
+                gap: 6px;
+                justify-content: flex-end;
+                align-items: center;
+                color: rgba(255,255,255,.78);
+              "
+            >
+              <span>{{ formatTime(msg.createdAt) }}</span>
+
+              <template v-if="msg.username === currentUsername">
+                <span
+                  v-if="msg.isRead"
+                  style="color: #8cffb1; font-weight: bold; letter-spacing: -1px;"
+                  title="Прочитано"
+                >
+                  ✓✓
+                </span>
+                <span
+                  v-else
+                  style="color: #d0d7de; font-weight: bold;"
+                  title="Отправлено"
+                >
+                  ✓
+                </span>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tm-composer">
+      <div
+        v-if="activeConversation?.type === 'channel' && !canSendMessage"
+        style="
+          margin-bottom: 10px;
+          color: #ffb7c5;
+          font-size: 13px;
+          padding: 10px 12px;
+          background: rgba(58,31,38,.55);
+          border: 1px solid rgba(255,107,129,.18);
+          border-radius: 12px;
+        "
+      >
+        У тебя только режим чтения: писать в канал могут только owner/admin.
+      </div>
+
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <button class="tm-icon-btn" :disabled="!activeConversation || !canSendMessage">📎</button>
+        <input
+          class="tm-input"
+          :value="text"
+          @input="emit('updateText', ($event.target as HTMLInputElement).value)"
+          @keyup.enter="emit('send')"
+          :placeholder="activeConversation?.type === 'channel' && !canSendMessage ? 'Только чтение' : 'Написать сообщение...'"
+          :disabled="!activeConversation || !canSendMessage"
+        />
+        <button class="tm-primary" @click="emit('send')" :disabled="!activeConversation || !canSendMessage">
+          ➤
+        </button>
+      </div>
+    </div>
+  </main>
+</template>
