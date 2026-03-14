@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api, setToken } from './services/api';
 import { connectSocket, disconnectSocket, getSocket } from './services/socket';
 import './styles/app.css';
@@ -72,6 +72,9 @@ const text = ref('');
 
 const loadingOlder = ref(false);
 const hasMoreOlder = ref(true);
+const hasMoreNewer = ref(false);
+const loadingNewer = ref(false);
+const isJumpMode = ref(false);
 const isChatNearBottom = ref(true);
 const pendingNewMessagesCount = ref(0);
 
@@ -270,7 +273,9 @@ async function loadConversations() {
 async function loadMessages(conversationId: string) {
   const response = await api.get(`/conversations/${conversationId}/messages?limit=30`);
   messages.value = response.data.messages;
-  hasMoreOlder.value = !!response.data.hasMore;
+  hasMoreOlder.value = !!response.data.hasMoreOlder;
+  hasMoreNewer.value = false;
+  isJumpMode.value = false;
 }
 
 async function loadOlderMessages() {
@@ -284,16 +289,38 @@ async function loadOlderMessages() {
     const oldest = messages.value[0];
     const response = await api.get(`/conversations/${activeConversationId.value}/messages`, {
       params: {
-        limit: 30,
+        limit: 40,
         before: oldest.createdAt,
       },
     });
 
     const older = response.data.messages || [];
     messages.value = [...older, ...messages.value];
-    hasMoreOlder.value = !!response.data.hasMore;
+    hasMoreOlder.value = !!response.data.hasMoreOlder;
   } finally {
     loadingOlder.value = false;
+  }
+}
+
+async function loadNewerMessages() {
+  if (!activeConversationId.value || loadingNewer.value || !hasMoreNewer.value || messages.value.length === 0) return;
+
+  loadingNewer.value = true;
+  try {
+    const newest = messages.value[messages.value.length - 1];
+    const response = await api.get(`/conversations/${activeConversationId.value}/messages`, {
+      params: { limit: 40, after: newest.createdAt }
+    });
+
+    const newer = response.data.messages || [];
+    messages.value = [...messages.value, ...newer];
+    hasMoreNewer.value = !!response.data.hasMoreNewer;
+
+    if (!hasMoreNewer.value) {
+      isJumpMode.value = false;
+    }
+  } finally {
+    loadingNewer.value = false;
   }
 }
 
@@ -323,16 +350,20 @@ async function handleReachLatest() {
 async function handleJumpToLatest() {
   if (!activeConversationId.value) return;
 
+  isJumpMode.value = false;
+  hasMoreNewer.value = false;
   isChatNearBottom.value = true;
   pendingNewMessagesCount.value = 0;
 
   await markConversationRead(activeConversationId.value);
   await loadConversations();
-  await refreshActiveConversationMessages();
+  await loadMessages(activeConversationId.value);
 }
 
 async function refreshActiveConversationMessages() {
   if (!activeConversationId.value) return;
+  // In jump mode, don't reload all messages to preserve scroll position
+  if (isJumpMode.value) return;
   await loadMessages(activeConversationId.value);
 }
 
@@ -349,12 +380,40 @@ function handlePinMessage(message: Message) {
 }
 
 async function handleJumpToMessage(messageId: string) {
-  if (!messageId) return;
-  await refreshActiveConversationMessages();
-  requestAnimationFrame(() => {
+  if (!messageId || !activeConversationId.value) return;
+
+  // Check if the message is already in the current list
+  const existsInList = messages.value.some(m => m.id === messageId);
+
+  if (existsInList) {
+    await nextTick();
     const el = document.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
-    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  });
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    return;
+  }
+
+  // Message not in list — load context around it
+  try {
+    const response = await api.get(
+      `/conversations/${activeConversationId.value}/messages/around/${messageId}`,
+      { params: { count: 30 } }
+    );
+
+    messages.value = response.data.messages || [];
+    hasMoreOlder.value = !!response.data.hasMoreOlder;
+    hasMoreNewer.value = !!response.data.hasMoreNewer;
+    isJumpMode.value = true;
+
+    await nextTick();
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  } catch (error) {
+    console.error('Failed to jump to message:', error);
+  }
 }
 
 async function openConversation(conversationId: string) {
@@ -363,6 +422,9 @@ async function openConversation(conversationId: string) {
   activeConversationId.value = conversationId;
   loadingOlder.value = false;
   hasMoreOlder.value = true;
+  hasMoreNewer.value = false;
+  loadingNewer.value = false;
+  isJumpMode.value = false;
   typingText.value = '';
   pendingNewMessagesCount.value = 0;
   replyToMessage.value = null;
@@ -581,6 +643,9 @@ function logout() {
   text.value = '';
   loadingOlder.value = false;
   hasMoreOlder.value = true;
+  hasMoreNewer.value = false;
+  loadingNewer.value = false;
+  isJumpMode.value = false;
   isChatNearBottom.value = true;
   pendingNewMessagesCount.value = 0;
   replyToMessage.value = null;
@@ -681,6 +746,9 @@ if (token.value) {
           :typing-text="typingText"
           :loading-older="loadingOlder"
           :has-more-older="hasMoreOlder"
+          :has-more-newer="hasMoreNewer"
+          :loading-newer="loadingNewer"
+          :is-jump-mode="isJumpMode"
           :pending-new-messages-count="pendingNewMessagesCount"
           :reply-to-message="replyToMessage"
           :pinned-message="pinnedMessage"
@@ -688,6 +756,7 @@ if (token.value) {
           @update-text="text = $event"
           @send="sendMessage"
           @load-older="loadOlderMessages"
+          @load-newer="loadNewerMessages"
           @near-bottom-change="handleNearBottomChange"
           @reach-latest="handleReachLatest"
           @jump-to-latest="handleJumpToLatest"

@@ -14,7 +14,7 @@ import {
   markConversationAsRead,
   updateParticipantRole,
 } from '../services/conversations';
-import { getMessagesByConversation } from '../services/messages';
+import { getMessagesByConversation, getMessagesAroundId } from '../services/messages';
 
 const router = Router();
 
@@ -71,6 +71,29 @@ router.post('/channel', requireAuth, async (req, res) => {
   return res.json(result);
 });
 
+router.get('/:id/messages/around/:messageId', requireAuth, async (req, res) => {
+  const rawId = req.params.id;
+  const conversationId = Array.isArray(rawId) ? rawId[0] : rawId;
+  const rawMessageId = req.params.messageId;
+  const messageId = Array.isArray(rawMessageId) ? rawMessageId[0] : rawMessageId;
+
+  if (!conversationId || !messageId) {
+    return res.status(400).json({ error: 'conversationId and messageId required' });
+  }
+
+  const allowed = await ensureUserInConversation(req.user!.userId, conversationId);
+  if (!allowed) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  const countRaw = Array.isArray(req.query.count) ? req.query.count[0] : req.query.count;
+  const count = Math.min(Math.max(Number(countRaw || 30), 1), 50);
+
+  const result = await getMessagesAroundId(conversationId, req.user!.userId, messageId, count);
+
+  return res.json(result);
+});
+
 router.get('/:id/messages', requireAuth, async (req, res) => {
   const rawId = req.params.id;
   const conversationId = Array.isArray(rawId) ? rawId[0] : rawId;
@@ -87,20 +110,23 @@ router.get('/:id/messages', requireAuth, async (req, res) => {
 
   const limitRaw = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
   const beforeRaw = Array.isArray(req.query.before) ? req.query.before[0] : req.query.before;
+  const afterRaw = Array.isArray(req.query.after) ? req.query.after[0] : req.query.after;
 
   const limit = Math.min(Math.max(Number(limitRaw || 30), 1), 100);
   const before = beforeRaw ? String(beforeRaw) : undefined;
+  const after = afterRaw ? String(afterRaw) : undefined;
 
-  const messages = await getMessagesByConversation(
+  const result = await getMessagesByConversation(
     conversationId,
     req.user!.userId,
     limit,
-    before
+    before,
+    after
   );
 
   return res.json({
-    messages,
-    hasMore: messages.length === limit,
+    ...result,
+    hasMore: result.hasMoreOlder,
   });
 });
 

@@ -47,6 +47,9 @@ const props = defineProps<{
   typingText: string;
   loadingOlder: boolean;
   hasMoreOlder: boolean;
+  hasMoreNewer: boolean;
+  loadingNewer: boolean;
+  isJumpMode: boolean;
   pendingNewMessagesCount: number;
   replyToMessage: Message | null;
   pinnedMessage: Message | null;
@@ -57,6 +60,7 @@ const emit = defineEmits<{
   updateText: [value: string];
   send: [];
   loadOlder: [];
+  loadNewer: [];
   nearBottomChange: [value: boolean];
   reachLatest: [];
   jumpToLatest: [];
@@ -68,6 +72,8 @@ const emit = defineEmits<{
 
 const messagesEl = ref<HTMLElement | null>(null);
 const wasNearBottom = ref(true);
+const scrollLockOlder = ref(false);
+const scrollLockNewer = ref(false);
 
 const contextMenu = ref<{
   visible: boolean;
@@ -181,7 +187,9 @@ async function onScroll() {
 
   notifyBottomState();
 
-  if (el.scrollTop < 120 && props.hasMoreOlder && !props.loadingOlder) {
+  // Load older messages (scroll up)
+  if (el.scrollTop < 120 && props.hasMoreOlder && !props.loadingOlder && !scrollLockOlder.value) {
+    scrollLockOlder.value = true;
     const prevScrollHeight = el.scrollHeight;
     const prevScrollTop = el.scrollTop;
     emit('loadOlder');
@@ -194,6 +202,24 @@ async function onScroll() {
       const diff = newScrollHeight - prevScrollHeight;
       messagesEl.value.scrollTop = prevScrollTop + diff;
       notifyBottomState();
+      scrollLockOlder.value = false;
+    });
+  }
+
+  // Load newer messages (scroll down) — only in jump mode
+  if (
+    props.isJumpMode &&
+    props.hasMoreNewer &&
+    !props.loadingNewer &&
+    !scrollLockNewer.value &&
+    el.scrollHeight - el.scrollTop - el.clientHeight < 150
+  ) {
+    scrollLockNewer.value = true;
+    emit('loadNewer');
+
+    await nextTick();
+    requestAnimationFrame(() => {
+      scrollLockNewer.value = false;
     });
   }
 }
@@ -344,8 +370,10 @@ watch(
 
 watch(
   () => props.messages.length,
-  async () => {
+  async (_newLen, _oldLen) => {
     await nextTick();
+    // In jump mode, don't auto-scroll
+    if (props.isJumpMode) return;
     if (wasNearBottom.value) {
       scrollToBottom();
     } else {
@@ -535,17 +563,24 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </template>
+
+        <div v-if="loadingNewer" class="tm-muted" style="text-align: center; margin-top: 12px;">
+          Загрузка новых сообщений...
+        </div>
       </div>
     </div>
 
     <div class="tm-composer tm-composer-telegramish">
       <div
-        v-if="pendingNewMessagesCount > 0 && activeConversation"
+        v-if="(pendingNewMessagesCount > 0 || isJumpMode) && activeConversation"
         class="tm-new-messages-floating"
       >
         <button class="tm-new-messages-btn" @click="handleJumpToLatest">
-          <span>
+          <span v-if="pendingNewMessagesCount > 0">
             ↓ {{ pendingNewMessagesCount }} нов{{ pendingNewMessagesCount === 1 ? 'ое сообщение' : pendingNewMessagesCount < 5 ? 'ых сообщения' : 'ых сообщений' }}
+          </span>
+          <span v-else>
+            ↓ К последним сообщениям
           </span>
         </button>
       </div>
